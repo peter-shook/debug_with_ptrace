@@ -25,7 +25,8 @@
 #define MOD_BITS(reg, shift, mask, field) \
     ( (reg) = SET_BITS((reg), (shift), (mask), (field)) )
 
-#define output(format, args...) fprintf(OPTION(output_file), format , ## args)
+#define output(level, format, args...) \
+    (OPTION(verbose) >= (level) ? fprintf(OPTION(output_file), format , ## args) : 0)
 
 #define OPTION(x) (options. x)
 
@@ -39,6 +40,12 @@
 #define ADDR_MASK (~(Addr_t)IRW_MASK)
 
 #define ADDR_FMT PRIxPTR
+
+enum {
+    out_quiet,
+    out_normal,
+    out_verbose,
+};
 
 typedef uintptr_t Addr_t;
 
@@ -60,7 +67,6 @@ struct {
 } procs;
 
 struct {
-    int quiet;
     int verbose;
     int attach;
     FILE *output_file;
@@ -74,6 +80,29 @@ const char *irw_name(unsigned irw)
     case R_MASK: return "Read";
     case W_MASK: return "Write";
     default:     return "Hit";
+    }
+}
+
+static
+void trace_cmd(char *argv[])
+{
+    pid_t child = fork();
+
+    if ( child < 0 )
+        error(EXIT_FAILURE, errno, "%s: fork %s", __func__, argv[0]);
+
+    if ( child == 0 )  // run command in child process
+    {
+        long rc = ptrace(PTRACE_TRACEME);
+
+        if (rc < 0) error(EXIT_FAILURE, errno, "%s: PTRACE_TRACEME '%s'", __func__, argv[0]);
+
+        execvp(argv[0], argv);
+        error(0, errno, "%s: execvp '%s'", __func__, argv[0]);
+        _exit(EXIT_FAILURE);
+    }
+    else {
+        procs.trace_pid = child;
     }
 }
 
@@ -119,15 +148,15 @@ void handle_stop(pid_t pid, int status, int sig)
     switch (sig)
     {
     case SIGTRAP:
-        output("%d trap status 0x%x sig %d\n", pid, status, sig);
+        output(out_normal, "%d trap status 0x%x sig %d\n", pid, status, sig);
         continue_running(pid, 0);
         break;
     case SIGSTOP:
-        output("%d stop status 0x%x sig %d\n", pid, status, sig);
+        output(out_normal, "%d stop status 0x%x sig %d\n", pid, status, sig);
         continue_running(pid, 0);
         break;
     default:
-        output("%d unhandled status 0x%x sig %d\n", pid, status, sig);
+        output(out_normal, "%d unhandled status 0x%x sig %d\n", pid, status, sig);
         continue_running(pid, 0);
     }
 }
@@ -145,7 +174,7 @@ void main_loop(void)
         {
             int exit_status = WEXITSTATUS(status);
 
-            output("%d exited %d\n", pid, exit_status);
+            output(out_normal, "%d exited %d\n", pid, exit_status);
 
             if (pid == procs.trace_pid) exit(exit_status);
         }
@@ -153,7 +182,7 @@ void main_loop(void)
         {
             int term_sig = WTERMSIG(status);
 
-            output("%d terminated with %d\n", pid, term_sig);
+            output(out_normal, "%d terminated with %d\n", pid, term_sig);
 
             if (pid == procs.trace_pid) exit(EXIT_SUCCESS);
         }
@@ -161,7 +190,7 @@ void main_loop(void)
         {
             int stop_sig = WSTOPSIG(status);
 
-            output("%d stopped with %d\n", pid, stop_sig);
+            output(out_normal, "%d stopped with %d\n", pid, stop_sig);
 
             handle_stop(pid, status, stop_sig);
         }
@@ -268,6 +297,7 @@ int main(int argc, char *argv[])
 {
     int opt;
 
+    OPTION(verbose)     = 1;
     OPTION(output_file) = stderr;
 
     while ((opt = getopt(argc, argv, "+i:r:w:c:C:d:p:qvh")) != -1)
@@ -311,10 +341,10 @@ int main(int argc, char *argv[])
                 error(EXIT_FAILURE, 0, "invalid PID '%s' for option 'p'\n", optarg);
             break;
         case 'q':
-            OPTION(quiet) = 1;
+            OPTION(verbose) = 0;
             break;
         case 'v':
-            OPTION(verbose) = 1;
+            OPTION(verbose)++;
             break;
         case 'h':
             usage(stdout, EXIT_SUCCESS);
@@ -328,6 +358,7 @@ int main(int argc, char *argv[])
 
     if ( remaining(argc) > 0 && ! OPTION(attach) )
     {
+        trace_cmd(&argv[optind]);
     }
     else if ( remaining(argc) == 0 && OPTION(attach) )
     {
