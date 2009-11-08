@@ -25,6 +25,8 @@
 #define MOD_BITS(reg, shift, mask, field) \
     ( (reg) = SET_BITS((reg), (shift), (mask), (field)) )
 
+#define output(format, args...) fprintf(OPTION(output_file), format , ## args)
+
 #define OPTION(x) (options. x)
 
 #define MAX_BREAKPOINTS 8
@@ -61,6 +63,7 @@ struct {
     int quiet;
     int verbose;
     int attach;
+    FILE *output_file;
 } options;
 
 static
@@ -83,6 +86,24 @@ void attach_pid(pid_t pid)
 }
 
 static
+void continue_running(pid_t pid, int sig)
+{
+    long rc = ptrace(PTRACE_CONT, pid, (char*)1, sig);
+
+    if (rc < 0 && errno != ESRCH)
+        error(EXIT_FAILURE, errno, "%s: PTRACE_CONT %d sig %d", __func__, pid, sig);
+}
+
+static
+void continue_syscall(pid_t pid)
+{
+    long rc = ptrace(PTRACE_SYSCALL, pid, (char*)1, 0);
+
+    if (rc < 0 && errno != ESRCH)
+        error(EXIT_FAILURE, errno, "%s: PTRACE_SYSCALL %d", __func__, pid);
+}
+
+static
 int my_waitpid(int *status)
 {
     pid_t pid;
@@ -90,6 +111,61 @@ int my_waitpid(int *status)
     do { pid = waitpid(-1, status, __WALL); } while ( pid == -1 && errno == EINTR );
 
     return pid;
+}
+
+static
+void handle_stop(pid_t pid, int status, int sig)
+{
+    switch (sig)
+    {
+    case SIGTRAP:
+        output("%d trap status 0x%x sig %d\n", pid, status, sig);
+        continue_running(pid, 0);
+        break;
+    case SIGSTOP:
+        output("%d stop status 0x%x sig %d\n", pid, status, sig);
+        continue_running(pid, 0);
+        break;
+    default:
+        output("%d unhandled status 0x%x sig %d\n", pid, status, sig);
+        continue_running(pid, 0);
+    }
+}
+
+static
+void main_loop(void)
+{
+    for (;;)
+    {
+        int status = 0;
+
+        pid_t pid = my_waitpid(&status);
+
+        if ( WIFEXITED(status) )
+        {
+            int exit_status = WEXITSTATUS(status);
+
+            output("%d exited %d\n", pid, exit_status);
+
+            if (pid == procs.trace_pid) exit(exit_status);
+        }
+        else if ( WIFSIGNALED(status) )
+        {
+            int term_sig = WTERMSIG(status);
+
+            output("%d terminated with %d\n", pid, term_sig);
+
+            if (pid == procs.trace_pid) exit(EXIT_SUCCESS);
+        }
+        else if ( WIFSTOPPED(status) )
+        {
+            int stop_sig = WSTOPSIG(status);
+
+            output("%d stopped with %d\n", pid, stop_sig);
+
+            handle_stop(pid, status, stop_sig);
+        }
+    }
 }
 
 static
@@ -186,10 +262,13 @@ void (dump_option)(const char *name)
 }
 
 #define option_with_space(argv) (optarg == (argv)[optind-1])
+#define remaining(argc) ((argc) - optind)
 
-main(int argc, char *argv[])
+int main(int argc, char *argv[])
 {
     int opt;
+
+    OPTION(output_file) = stderr;
 
     while ((opt = getopt(argc, argv, "+i:r:w:c:C:d:p:qvh")) != -1)
     {
@@ -227,7 +306,8 @@ main(int argc, char *argv[])
         case 'p':
             dump_option("p");
             OPTION(attach) = 1;
-            if ( (procs.trace_pid = atoi(optarg)) <= 0 )
+            procs.trace_pid = atoi(optarg);
+            if ( procs.trace_pid <= 0 )
                 error(EXIT_FAILURE, 0, "invalid PID '%s' for option 'p'\n", optarg);
             break;
         case 'q':
@@ -246,7 +326,16 @@ main(int argc, char *argv[])
 
     dump_args(optind, argc, argv);
 
-    if (argc - optind < 2) usage(stderr, EXIT_FAILURE);
+    if ( remaining(argc) > 0 && ! OPTION(attach) )
+    {
+    }
+    else if ( remaining(argc) == 0 && OPTION(attach) )
+    {
+        attach_pid(procs.trace_pid);
+    }
+    else usage(stderr, EXIT_FAILURE);
+
+    main_loop();
 
     return EXIT_SUCCESS;
 }

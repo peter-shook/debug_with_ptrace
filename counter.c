@@ -61,4 +61,6 @@ int main(int argc, char *argv[])
     }
 
     do_count(0);
+
+    return 0;
 }
