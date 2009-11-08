@@ -1,13 +1,20 @@
 
+C = counter
 T = trace
 
-srcs = trace.o
+cobjs = counter.o
+tobjs = trace.o
 
-.PHONY : clean
+.PHONY : all clean
 
-$T: $(srcs)
+all: $T $C
+
+$C: $(cobjs)
+	gcc -g -Wall -Wextra -o $@ $<
+
+$T: $(tobjs)
 	gcc -g -Wall -Wextra -o $@ $<
 
 clean:
-	rm -f $T
+	rm -f $T $(tobjs) $C $(cobjs)
 

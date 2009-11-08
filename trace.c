@@ -54,9 +54,13 @@ struct {
 } bps;
 
 struct {
+    pid_t trace_pid;
+} procs;
+
+struct {
     int quiet;
     int verbose;
-    pid_t attach_pid;
+    int attach;
 } options;
 
 static
@@ -68,6 +72,24 @@ const char *irw_name(unsigned irw)
     case W_MASK: return "Write";
     default:     return "Hit";
     }
+}
+
+static
+void attach_pid(pid_t pid)
+{
+    long rc = ptrace(PTRACE_ATTACH, pid);
+
+    if (rc < 0) error(EXIT_FAILURE, errno, "%s: PTRACE_ATTACH %d", __func__, pid);
+}
+
+static
+int my_waitpid(int *status)
+{
+    pid_t pid;
+
+    do { pid = waitpid(-1, status, __WALL); } while ( pid == -1 && errno == EINTR );
+
+    return pid;
 }
 
 static
@@ -165,15 +187,11 @@ void (dump_option)(const char *name)
 
 #define option_with_space(argv) (optarg == (argv)[optind-1])
 
-char *progname;
-
 main(int argc, char *argv[])
 {
     int opt;
 
-    progname = argv[0];
-
-    while ((opt = getopt(argc, argv, "+i:r:w:c:C:d:qv")) != -1)
+    while ((opt = getopt(argc, argv, "+i:r:w:c:C:d:p:qvh")) != -1)
     {
         switch (opt) {
         case 'i':
@@ -205,6 +223,12 @@ main(int argc, char *argv[])
             break;
         case 'd':
             dump_option("d");
+            break;
+        case 'p':
+            dump_option("p");
+            OPTION(attach) = 1;
+            if ( (procs.trace_pid = atoi(optarg)) <= 0 )
+                error(EXIT_FAILURE, 0, "invalid PID '%s' for option 'p'\n", optarg);
             break;
         case 'q':
             OPTION(quiet) = 1;
