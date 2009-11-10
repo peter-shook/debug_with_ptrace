@@ -10,7 +10,7 @@ tobjs = trace.o
 all: $T $C
 
 $C: $(cobjs)
-	gcc -g -Wall -Wextra -o $@ $<
+	gcc -g -Wall -Wextra -o $@ $< -lpthread
 
 $T: $(tobjs)
 	gcc -g -Wall -Wextra -o $@ $<

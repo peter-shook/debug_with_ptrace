@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <pthread.h>
 
 struct {
     int count;
@@ -13,7 +14,7 @@ struct {
     .delay = 1,
 };
 
-void *do_count(void* arg)
+void *do_count(void *arg)
 {
     for (;;)
     {
@@ -29,6 +30,10 @@ void *do_count(void* arg)
 
         sleep(delay);
     }
+
+    printf("done\n");
+
+    return 0;
 }
 
 void usage(FILE *fp, int status)
@@ -41,6 +46,9 @@ void usage(FILE *fp, int status)
 
 int main(int argc, char *argv[])
 {
+    pthread_t thread_id;
+    int status;
+    void *result;
     int opt;
 
     while ((opt = getopt(argc, argv, "c:d:h")) != -1)
@@ -60,7 +68,14 @@ int main(int argc, char *argv[])
         }
     }
 
-    do_count(0);
+    sleep(var.delay);
+
+    status = pthread_create(&thread_id, NULL, do_count, NULL);
+
+    status = pthread_join(thread_id, &result);
+
+    return status || result;
 
     return 0;
 }
+

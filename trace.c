@@ -84,6 +84,49 @@ const char *irw_name(unsigned irw)
 }
 
 static
+const char *signal_name(sig)
+{
+    switch (sig)
+    {
+#define SIG_0 0
+#define RET_NAME(x) case x: return #x
+        RET_NAME(SIG_0);
+        RET_NAME(SIGHUP);
+        RET_NAME(SIGINT);
+        RET_NAME(SIGQUIT);
+        RET_NAME(SIGILL);
+        RET_NAME(SIGTRAP);
+        RET_NAME(SIGABRT);
+        RET_NAME(SIGBUS);
+        RET_NAME(SIGFPE);
+        RET_NAME(SIGKILL);
+        RET_NAME(SIGUSR1);
+        RET_NAME(SIGSEGV);
+        RET_NAME(SIGUSR2);
+        RET_NAME(SIGPIPE);
+        RET_NAME(SIGALRM);
+        RET_NAME(SIGTERM);
+        RET_NAME(SIGSTKFLT);
+        RET_NAME(SIGCHLD);
+        RET_NAME(SIGCONT);
+        RET_NAME(SIGSTOP);
+        RET_NAME(SIGTSTP);
+        RET_NAME(SIGTTIN);
+        RET_NAME(SIGTTOU);
+        RET_NAME(SIGURG);
+        RET_NAME(SIGXCPU);
+        RET_NAME(SIGXFSZ);
+        RET_NAME(SIGVTALRM);
+        RET_NAME(SIGPROF);
+        RET_NAME(SIGWINCH);
+        RET_NAME(SIGIO);
+        RET_NAME(SIGPWR);
+        RET_NAME(SIGSYS);
+        default: return "unknown";
+    }
+}
+
+static
 void trace_cmd(char *argv[])
 {
     pid_t child = fork();
@@ -133,6 +176,39 @@ void continue_syscall(pid_t pid)
 }
 
 static
+void trace_clones(pid_t pid)
+{
+    long rc = ptrace(PTRACE_SETOPTIONS, pid, (char*)1, PTRACE_O_TRACEVFORK
+                                                     | PTRACE_O_TRACECLONE);
+
+    if (rc < 0) error(EXIT_FAILURE, errno, "%s: PTRACE_SETOPTIONS %d", __func__, pid);
+}
+
+static
+const char *clone_name(int status)
+{
+    switch ( status >> 16 )
+    {
+        case PTRACE_EVENT_FORK:  return "fork";
+        case PTRACE_EVENT_VFORK: return "vfork";
+        case PTRACE_EVENT_CLONE: return "clone";
+        default:                 return 0;
+    }
+}
+
+static
+pid_t get_clone_pid(pid_t pid)
+{
+    unsigned long new_pid = 0;
+
+    long rc = ptrace(PTRACE_GETEVENTMSG, pid, NULL, &new_pid) ;
+
+    if (rc < 0) error(EXIT_FAILURE, errno, "%s: PTRACE_GETEVENTMSG %d", __func__, pid);
+
+    return new_pid;
+}
+
+static
 int my_waitpid(int *status)
 {
     pid_t pid;
@@ -145,19 +221,38 @@ int my_waitpid(int *status)
 static
 void handle_stop(pid_t pid, int status, int sig)
 {
+    const char *cloned;
+    static int initialized = 0;
+
+    if ( ! initialized )
+    {
+        initialized = 1;
+
+        trace_clones(pid);
+        continue_running(pid, 0);
+    }
+
     switch (sig)
     {
     case SIGTRAP:
-        output(out_normal, "%d trap status 0x%x sig %d\n", pid, status, sig);
-        continue_running(pid, 0);
+        cloned = clone_name(status);
+        if ( cloned )
+        {
+            pid_t new_pid = get_clone_pid(pid);
+
+            output(out_normal, "%d %s %d\n", pid, cloned, new_pid);
+
+            continue_running(pid, 0);
+
+            continue_running(new_pid, 0);
+        }
+        else continue_running(pid, sig);  // deliver signal
         break;
     case SIGSTOP:
-        output(out_normal, "%d stop status 0x%x sig %d\n", pid, status, sig);
         continue_running(pid, 0);
         break;
     default:
-        output(out_normal, "%d unhandled status 0x%x sig %d\n", pid, status, sig);
-        continue_running(pid, 0);
+        continue_running(pid, sig);  // deliver signal
     }
 }
 
@@ -169,6 +264,11 @@ void main_loop(void)
         int status = 0;
 
         pid_t pid = my_waitpid(&status);
+
+        if ( pid < 0 )
+            error(EXIT_FAILURE, errno, "%s: waitpid\n", __func__);
+
+        output(out_verbose, "%d waitpid status 0x%04x\n", pid, status);
 
         if ( WIFEXITED(status) )
         {
@@ -182,7 +282,8 @@ void main_loop(void)
         {
             int term_sig = WTERMSIG(status);
 
-            output(out_normal, "%d terminated with %d\n", pid, term_sig);
+            output(out_normal, "%d terminated with %d %s\n",
+                   pid, term_sig, signal_name(term_sig));
 
             if (pid == procs.trace_pid) exit(EXIT_SUCCESS);
         }
@@ -190,10 +291,12 @@ void main_loop(void)
         {
             int stop_sig = WSTOPSIG(status);
 
-            output(out_normal, "%d stopped with %d\n", pid, stop_sig);
+            output(out_normal, "%d stopped with %d %s\n",
+                   pid, stop_sig, signal_name(stop_sig));
 
             handle_stop(pid, status, stop_sig);
         }
+        else output(out_normal, "%d waitpid strange status 0x%x\n", pid, status);
     }
 }
 
